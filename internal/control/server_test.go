@@ -206,6 +206,11 @@ func TestStaleSocketRecoveryAndPersistentLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A second name keeps the stale inode allocated, so the replacement socket
+	// cannot reuse its inode number and SameFile reliably detects replacement.
+	if err := os.Link(path, filepath.Join(dir, "stale.ref")); err != nil {
+		t.Fatal(err)
+	}
 	if err := stale.Close(); err != nil {
 		t.Fatal(err)
 	}
