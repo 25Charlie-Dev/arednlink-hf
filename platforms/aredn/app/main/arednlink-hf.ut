@@ -1,0 +1,113 @@
+{%
+// SPDX-License-Identifier: GPL-3.0-only
+import * as gate from '../arednlink-hf/gate.uc';
+import * as ipc from '../arednlink-hf/ipc.uc';
+
+if (request.env.AREDNLINK_PREFLIGHT !== true) {
+    response.statusCode = 404;
+    print('Not found.');
+    return;
+}
+
+// Revalidate this request using native AREDN authentication; never reuse cached privilege.
+auth.isAdmin = false;
+if (config.authenable !== true || config.forceauth || config.debug || !request.headers?.cookie) {
+    response.statusCode = 401;
+    print('Native administrator authentication required.');
+    return;
+}
+auth.runAuthentication(request.env, response);
+delete response.headers['Access-Control-Allow-Origin'];
+delete response.headers['Access-Control-Allow-Headers'];
+delete response.headers['Access-Control-Allow-Credentials'];
+response.headers['X-Content-Type-Options'] = 'nosniff';
+response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'";
+if (!auth.isAdmin) {
+    response.statusCode = 401;
+    print('Native administrator authentication required.');
+    return;
+}
+if (request.env.REQUEST_METHOD === 'POST') {
+    response.headers['Content-Type'] = 'application/json';
+    if (!gate.csrf(request.env)) {
+        response.statusCode = 403;
+        print('{"ok":false,"error":"csrf_refused"}');
+        return;
+    }
+    const op = request.headers['x-arednlink-operation'];
+    if (op !== 'status' && op !== 'config.get' && op !== 'config.validate' && op !== 'config.save' && op !== 'service.restart') {
+        response.statusCode = 400;
+        print('{"ok":false,"error":"invalid_operation"}');
+        return;
+    }
+    const count = int(request.env.CONTENT_LENGTH ?? '0');
+    let body = '';
+    while (length(body) < count) {
+        const remaining = count - length(body);
+        const chunk = uhttpd.recv(remaining > 4096 ? 4096 : remaining);
+        if (!length(chunk))
+            break;
+        body += chunk;
+    }
+    if (length(body) !== count || ((op === 'status' || op === 'config.get' || op === 'service.restart') && count)) {
+        response.statusCode = 400;
+        print('{"ok":false,"error":"invalid_body"}');
+        return;
+    }
+    if (op === 'service.restart') {
+        // Fixed service and action; no browser input reaches the shell or rc.init.
+        const command = "/bin/ubus -t 5 call rc init '{\"name\":\"arednlink-hf\",\"action\":\"restart\"}' 2>/dev/null";
+        const pipe = fs.popen(command, 'r');
+        if (!pipe) {
+            response.statusCode = 503;
+            print('{"ok":false,"error":"restart_failed"}');
+            return;
+        }
+        const output = pipe.read(4097);
+        const exit = pipe.close();
+        if (exit !== 0 || length(output) > 4096) {
+            response.statusCode = 503;
+            print('{"ok":false,"error":"restart_failed"}');
+            return;
+        }
+        print('{"ok":true,"result":{"state":"requested"}}');
+        return;
+    }
+    const message = { op: op };
+    if (op === 'config.validate' || op === 'config.save')
+        message.config = body;
+    try {
+        print(sprintf('%J', ipc.query(message)));
+    }
+    catch (_) {
+        response.statusCode = 503;
+        print('{"ok":false,"error":"daemon_unavailable"}');
+    }
+    return;
+}
+const random = fs.open('/dev/urandom', 'r');
+const bytes = random ? random.read(32) : null;
+if (random)
+    random.close();
+if (length(bytes) !== 32) {
+    response.statusCode = 503;
+    print('CSRF protection unavailable.');
+    return;
+}
+let token = '';
+for (let i = 0; i < 32; i++)
+    token += sprintf('%02x', ord(bytes, i));
+// This cookie contains random CSRF entropy only, never native auth material.
+// Keep the original native auth cookie unchanged; emit only the independent CSRF cookie.
+response.headers['Content-Type'] = 'text/html; charset=utf-8';
+response.headers['Set-Cookie'] = `arednlinkCSRF=${token}; Path=/cgi-bin/apps/arednlink-hf/admin; HttpOnly; SameSite=Strict${request.env.HTTPS === 'on' ? '; Secure' : ''}`;
+%}
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>AREDNlink-HF</title><link rel="stylesheet" href="/apps/arednlink-hf/ui.css"><script defer src="/apps/arednlink-hf/ui.js"></script></head><body>
+<main data-csrf="{{token}}"><h1>AREDNlink-HF</h1><p><a href="/a/status">AREDN node</a></p><p>Radio adverts report service claims and discovery observations. A claim does not start or expose a service.</p>
+<button id="refresh" type="button">Refresh status</button> <button id="restart" type="button">Restart AREDNlink-HF</button><p id="message" role="status"></p><p id="recovery" role="status"></p>
+<h2>Radio activity, RX, TX and resource guard</h2><pre id="health">Loading…</pre>
+<h2>Discovered peers, probe results and service claims</h2><p>A heard claim or TCP ACK does not establish service availability.</p><pre id="peers">Loading…</pre>
+<h2>Service advert catalog</h2><p>Assigned service flags are listed below. Ten slots remain unassigned. An advert claims availability; it does not start or expose a service.</p><p>Set <code>advert.enabled</code> to enable or disable transmission. Set <code>advert.ip</code> to the IP to advertise and select config names in the <code>advert.services</code> JSON list. An empty list advertises IP presence alone. Each radio adapter has its own advert settings.</p><table><thead><tr><th>Bit</th><th>Service</th><th>Config name</th></tr></thead><tbody><tr><td>0</td><td>Signal proxy</td><td><code>signal_proxy</code></td></tr><tr><td>1</td><td>Briar contact</td><td><code>briar_contact</code></td></tr><tr><td>2</td><td>SimpleX SMP</td><td><code>simplex_smp</code></td></tr><tr><td>3</td><td>Yggdrasil connectivity (external service only)</td><td><code>yggdrasil_connectivity</code></td></tr><tr><td>4</td><td>Matrix federation</td><td><code>matrix_federation</code></td></tr></tbody></table>
+<h2>JSON configuration</h2><p>Validate before saving. Saved settings take effect after a service restart.</p><p id="pending"></p><label for="draft">Next restart settings</label><textarea id="draft" rows="22" spellcheck="false"></textarea><p><button id="validate" type="button">Validate</button> <button id="save" type="button">Save for restart</button></p>
+<details><summary>Running settings</summary><pre id="running"></pre></details><details><summary>Saved settings</summary><pre id="saved"></pre></details>
+</main></body></html>

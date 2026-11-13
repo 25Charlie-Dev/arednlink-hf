@@ -1,0 +1,36 @@
+{
+  "max_peers": 16,
+  "peer_table": {
+    "full_policy": "replace"
+  },
+  "radios": [
+    {
+      "kind": "kiss",
+      "endpoint": "127.0.0.1:8001",
+      "callsign": "N0CALL",
+      "destination": "AREDNH",
+      "advert": {
+        "enabled": false,
+        "ip": "198.51.100.27",
+        "services": ["signal_proxy", "simplex_smp"],
+        "validity_minutes": 90,
+        "interval": "30m",
+        "jitter": "3m"
+      }
+    },
+    {
+      "kind": "js8call",
+      "endpoint": "127.0.0.1:2442",
+      "callsign": "N0CALL",
+      "destination": "@AREDN",
+      "advert": {
+        "enabled": false,
+        "ip": "198.51.100.27",
+        "services": ["signal_proxy", "simplex_smp"],
+        "validity_minutes": 90,
+        "interval": "30m",
+        "jitter": "3m"
+      }
+    }
+  ]
+}

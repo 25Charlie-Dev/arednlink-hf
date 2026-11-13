@@ -1,0 +1,22 @@
+{
+  "log_level": "info",
+  "max_peers": 16,
+  "peer_table": {
+    "full_policy": "replace"
+  },
+  "enable_probes": false,
+  "probe_timeout": "3s",
+  "probe_interval": "5m",
+  "probe_global_interval": "10s",
+  "probe_prefixes": [],
+  "probe_ports": [],
+  "radio": {
+    "kind": "none"
+  },
+  "resource_guard": {
+    "enabled": true,
+    "max_rss_kib": 24576,
+    "min_available_kib": 32768,
+    "interval": "5s"
+  }
+}

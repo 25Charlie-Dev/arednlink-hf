@@ -1,0 +1,19 @@
+{
+  "log_level": "info",
+  "max_peers": 64,
+  "peer_table": {
+    "full_policy": "replace"
+  },
+  "enable_probes": false,
+  "probe_timeout": "3s",
+  "probe_interval": "5m",
+  "probe_global_interval": "10s",
+  "probe_prefixes": [],
+  "probe_ports": [],
+  "radio": {
+    "kind": "none",
+    "beacon": {
+      "enabled": false
+    }
+  }
+}

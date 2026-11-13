@@ -1,0 +1,9 @@
+:root { color-scheme: light dark; font: 16px system-ui, sans-serif; }
+body { margin: 1.5rem auto; padding: 0 1rem; max-width: 70rem; }
+h1, h2 { line-height: 1.2; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: .75rem; border: 1px solid #888; }
+textarea { box-sizing: border-box; width: 100%; font: .9rem monospace; }
+button { padding: .5rem .75rem; margin: .25rem; }
+label { display: block; margin-bottom: .5rem; }
+table { border-collapse: collapse; margin-bottom: 1rem; }
+th, td { border: 1px solid #888; padding: .4rem .7rem; text-align: left; }

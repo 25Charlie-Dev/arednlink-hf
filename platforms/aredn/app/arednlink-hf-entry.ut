@@ -1,0 +1,16 @@
+{%
+// Own extension around AREDN's unmodified native dispatcher; no auth data is exported.
+import * as gate from './arednlink-hf/gate.uc';
+render(loadfile('/app/root.ut', { raw_mode: false }));
+const native = global.handle_request;
+global.handle_request = function(env) {
+    const refusal = gate.preflight(env);
+    if (refusal) {
+        uhttpd.send(`Status: ${refusal}\r\nCache-Control: no-store\r\nContent-Type: text/plain\r\n\r\nRequest refused.\n`);
+        return;
+    }
+    env.AREDNLINK_PREFLIGHT = true;
+    env.PATH_INFO = '/arednlink-hf';
+    native(env);
+};
+%}

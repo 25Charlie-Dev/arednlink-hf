@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="JS8Call network hub">
+<g fill="none" stroke="#000" stroke-width="6" stroke-linecap="round"><path d="M128 72V40M158 98l33-33M184 128h32M158 158l33 33M128 184v32M98 158l-33 33M72 128H40M98 98 65 65"/></g>
+<g fill="none" stroke="#000" stroke-width="6"><circle cx="128" cy="24" r="15"/><circle cx="202" cy="54" r="15"/><circle cx="232" cy="128" r="15"/><circle cx="202" cy="202" r="15"/><circle cx="128" cy="232" r="15"/><circle cx="54" cy="202" r="15"/><circle cx="24" cy="128" r="15"/><circle cx="54" cy="54" r="15"/></g>
+<g fill="#000" fill-rule="evenodd"><path d="M128 74a38 38 0 1 0 0 76 38 38 0 1 0 0-76Zm0 14a24 24 0 1 1 0 48 24 24 0 1 1 0-48Z"/><path d="M128 106a38 38 0 1 0 0 76 38 38 0 1 0 0-76Zm0 14a24 24 0 1 1 0 48 24 24 0 1 1 0-48Z"/><path d="M124 82h12v72c0 18-9 29-26 29-13 0-21-8-23-20l12-3c2 7 5 11 12 11 9 0 13-6 13-18V82Z"/></g></svg>
