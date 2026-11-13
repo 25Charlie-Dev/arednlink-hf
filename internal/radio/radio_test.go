@@ -55,7 +55,7 @@ func TestCancelClosesReadAndJoinsWatcher(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	reader, peer := net.Pipe()
-	defer peer.Close()
+	defer closeQuietly(t, peer)
 	done := make(chan error, 1)
 	reports := eventLog{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	go func() {

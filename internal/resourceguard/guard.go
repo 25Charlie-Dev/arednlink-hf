@@ -146,7 +146,7 @@ func (m *Monitor) check(ctx context.Context, logger *slog.Logger) error {
 }
 
 func readBounded(path string) ([]byte, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // G304: path is a fixed procfs file chosen by the caller, never request input
 	if err != nil {
 		return nil, err
 	}

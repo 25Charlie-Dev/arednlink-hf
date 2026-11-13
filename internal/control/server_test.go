@@ -38,9 +38,7 @@ func (configStub) Save(context.Context, string) error     { return nil }
 func startServer(t *testing.T) (string, context.CancelFunc, <-chan error) {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
+	setMode(t, dir, 0700)
 	path := filepath.Join(dir, "control.sock")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -73,8 +71,10 @@ func exchange(t *testing.T, path, frame string) response {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(4 * time.Second))
+	defer closeQuietly(t, conn)
+	if err := conn.SetDeadline(time.Now().Add(4 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err = io.WriteString(conn, frame); err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestFramesAndModes(t *testing.T) {
 }
 func TestUnsafePaths(t *testing.T) {
 	dir := t.TempDir()
-	os.Chmod(dir, 0700)
+	setMode(t, dir, 0700)
 	path := filepath.Join(dir, "control.sock")
 	if err := os.WriteFile(path, []byte("keep"), 0600); err != nil {
 		t.Fatal(err)
@@ -126,22 +126,22 @@ func TestUnsafePaths(t *testing.T) {
 	if _, err := listen(path); err == nil {
 		t.Fatal("replaced regular file")
 	}
-	data, _ := os.ReadFile(path)
+	data, _ := readTestFile(path)
 	if string(data) != "keep" {
 		t.Fatal("changed existing file")
 	}
-	os.Remove(path)
-	os.Symlink(filepath.Join(dir, "absent"), path)
+	must(t, os.Remove(path))
+	must(t, os.Symlink(filepath.Join(dir, "absent"), path))
 	if _, err := listen(path); err == nil {
 		t.Fatal("accepted socket symlink")
 	}
-	os.Remove(path)
+	must(t, os.Remove(path))
 	alias := filepath.Join(t.TempDir(), "alias")
-	os.Symlink(dir, alias)
+	must(t, os.Symlink(dir, alias))
 	if _, err := listen(filepath.Join(alias, "control.sock")); err == nil {
 		t.Fatal("accepted directory symlink")
 	}
-	os.Chmod(dir, 0755)
+	setMode(t, dir, 0755)
 	if _, err := listen(path); err == nil {
 		t.Fatal("accepted public directory")
 	}
@@ -155,11 +155,15 @@ func TestConcurrencyAndCancellation(t *testing.T) {
 			t.Fatal(err)
 		}
 		conns = append(conns, c)
-		defer c.Close()
+		defer closeQuietly(t, c)
 	}
 	// Two incomplete requests occupy both workers; the third is not processed.
-	io.WriteString(conns[2], "{\"op\":\"status\"}\n")
-	conns[2].SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+	if _, err := io.WriteString(conns[2], "{\"op\":\"status\"}\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := conns[2].SetReadDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := conns[2].Read(make([]byte, 1)); err == nil {
 		t.Fatal("third client processed while both workers occupied")
 	}
@@ -174,7 +178,9 @@ func TestConcurrencyAndCancellation(t *testing.T) {
 		t.Fatal("socket retained on shutdown")
 	}
 	for _, c := range conns[:2] {
-		c.SetReadDeadline(time.Now().Add(time.Second))
+		if err := c.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := c.Read(make([]byte, 1)); err == nil {
 			t.Fatal("client retained on cancellation")
 		}
@@ -190,18 +196,14 @@ func TestMissingNewlineDeadline(t *testing.T) {
 
 func TestStaleSocketRecoveryAndPersistentLock(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
+	setMode(t, dir, 0700)
 	path := filepath.Join(dir, "control.sock")
 	stale, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	stale.SetUnlinkOnClose(false)
-	if err := os.Chmod(path, 0600); err != nil {
-		t.Fatal(err)
-	}
+	setMode(t, path, 0600)
 	before, err := os.Lstat(path)
 	if err != nil {
 		t.Fatal(err)
@@ -218,8 +220,8 @@ func TestStaleSocketRecoveryAndPersistentLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer owned.lock.Close()
-	defer owned.listener.Close()
+	defer closeQuietly(t, owned.lock)
+	defer closeQuietly(t, owned.listener)
 	after, err := os.Lstat(path)
 	if err != nil || os.SameFile(before, after) {
 		t.Fatal("stale socket was not replaced", err)
@@ -231,8 +233,8 @@ func TestStaleSocketRecoveryAndPersistentLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owned.listener.Close()
-	owned.lock.Close()
+	closeQuietly(t, owned.listener)
+	closeQuietly(t, owned.lock)
 	lockAfter, err := os.Lstat(path + ".lock")
 	if err != nil || !os.SameFile(lockBefore, lockAfter) {
 		t.Fatal("lock inode changed", err)
@@ -243,9 +245,7 @@ func TestUnsafeLockPaths(t *testing.T) {
 	for _, kind := range []string{"symlink", "directory", "public", "hardlink"} {
 		t.Run(kind, func(t *testing.T) {
 			dir := t.TempDir()
-			if err := os.Chmod(dir, 0700); err != nil {
-				t.Fatal(err)
-			}
+			setMode(t, dir, 0700)
 			path := filepath.Join(dir, "control.sock")
 			lock := path + ".lock"
 			switch kind {
@@ -258,7 +258,8 @@ func TestUnsafeLockPaths(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "public":
-				if err := os.WriteFile(lock, nil, 0644); err != nil {
+				// Deliberately world-readable: the lock check must reject it.
+				if err := os.WriteFile(lock, nil, 0644); err != nil { //nolint:gosec // G306: the unsafe mode is the fixture
 					t.Fatal(err)
 				}
 			case "hardlink":
@@ -271,8 +272,8 @@ func TestUnsafeLockPaths(t *testing.T) {
 				}
 			}
 			if owned, err := listen(path); err == nil {
-				owned.listener.Close()
-				owned.lock.Close()
+				closeQuietly(t, owned.listener)
+				closeQuietly(t, owned.lock)
 				t.Fatal("accepted unsafe lock")
 			}
 			if _, err := os.Lstat(path); !os.IsNotExist(err) {
@@ -284,25 +285,21 @@ func TestUnsafeLockPaths(t *testing.T) {
 
 func TestActiveSocketIsPreserved(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
+	setMode(t, dir, 0700)
 	path := filepath.Join(dir, "control.sock")
 	active, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer active.Close()
-	if err := os.Chmod(path, 0600); err != nil {
-		t.Fatal(err)
-	}
+	defer closeQuietly(t, active)
+	setMode(t, path, 0600)
 	before, err := os.Lstat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if owned, err := listen(path); err == nil {
-		owned.listener.Close()
-		owned.lock.Close()
+		closeQuietly(t, owned.listener)
+		closeQuietly(t, owned.lock)
 		t.Fatal("accepted active socket")
 	}
 	after, err := os.Lstat(path)
@@ -328,15 +325,13 @@ func (f *flakyAcceptor) AcceptUnix() (*net.UnixConn, error) {
 func newFlaky(t *testing.T, failures int32, err error) (string, *flakyAcceptor, *controlListener) {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
+	setMode(t, dir, 0700)
 	path := filepath.Join(dir, "control.sock")
 	owned, listenErr := listen(path)
 	if listenErr != nil {
 		t.Fatal(listenErr)
 	}
-	t.Cleanup(func() { owned.listener.Close(); owned.lock.Close() })
+	t.Cleanup(func() { closeQuietly(t, owned.listener); closeQuietly(t, owned.lock) })
 	flaky := &flakyAcceptor{UnixListener: owned.listener, err: err}
 	flaky.failures.Store(failures)
 	return path, flaky, owned
@@ -355,7 +350,7 @@ func TestTransientAcceptErrorsBackOffAndRetry(t *testing.T) {
 			t.Fatalf("%v: server did not recover: %+v", cause, reply)
 		}
 		cancel()
-		owned.listener.Close()
+		closeQuietly(t, owned.listener)
 		select {
 		case err := <-done:
 			if err != nil {

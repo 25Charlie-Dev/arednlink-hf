@@ -229,7 +229,7 @@ func ax25Address(raw []byte) (string, bool, bool) {
 			padded = true
 			continue
 		}
-		if padded || !(c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') {
+		if padded || (c < 'A' || c > 'Z') && (c < '0' || c > '9') {
 			return "", false, false
 		}
 		call[length] = c
@@ -258,18 +258,25 @@ func kissPayload(info, target, destination, callsign string) (string, bool) {
 	}
 	body := info[11:]
 	if pos := strings.IndexByte(body, '{'); pos >= 0 {
-		id := body[pos+1:]
-		if len(id) < 1 || len(id) > 5 {
+		if !validMessageID(body[pos+1:]) {
 			return "", false
-		}
-		for i := 0; i < len(id); i++ {
-			if !(id[i] >= 'A' && id[i] <= 'Z' || id[i] >= 'a' && id[i] <= 'z' || id[i] >= '0' && id[i] <= '9') {
-				return "", false
-			}
 		}
 		body = body[:pos]
 	}
 	return body, len(body) <= 67 && protocol.HasAdvertisementPrefix(body)
+}
+
+// validMessageID accepts the one to five alphanumeric characters of an APRS message id.
+func validMessageID(id string) bool {
+	if len(id) < 1 || len(id) > 5 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		if (id[i] < 'A' || id[i] > 'Z') && (id[i] < 'a' || id[i] > 'z') && (id[i] < '0' || id[i] > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 func validAX25Call(call string) bool {
@@ -278,7 +285,7 @@ func validAX25Call(call string) bool {
 		return false
 	}
 	for i := 0; i < len(base); i++ {
-		if !(base[i] >= 'A' && base[i] <= 'Z' || base[i] >= '0' && base[i] <= '9') {
+		if (base[i] < 'A' || base[i] > 'Z') && (base[i] < '0' || base[i] > '9') {
 			return false
 		}
 	}

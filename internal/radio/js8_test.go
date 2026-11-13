@@ -104,12 +104,71 @@ func TestJS8BeaconRefusalResponseIsNotAcceptance(t *testing.T) {
 	}
 }
 
+// serveJS8Refusal plays a synthetic API: it reads one request and answers it with a refusal.
+func serveJS8Refusal(t *testing.T, listener net.Listener, requestSeen chan<- string, serverDone chan<- struct{}) {
+	defer close(serverDone)
+	peer, acceptErr := listener.Accept()
+	if acceptErr != nil {
+		return
+	}
+	defer closeQuietly(t, peer)
+	line, readErr := bufio.NewReaderSize(peer, 1024).ReadString('\n')
+	if readErr != nil {
+		return
+	}
+	requestSeen <- line
+	var request struct {
+		Params struct {
+			ID uint64 `json:"_ID"`
+		} `json:"params"`
+	}
+	if json.Unmarshal([]byte(line), &request) != nil {
+		return
+	}
+	response, marshalErr := json.Marshal(map[string]any{"type": "TX.SEND_MESSAGE", "value": "", "params": map[string]any{
+		"_ID": request.Params.ID, "REFUSED": true, "REASON": "auto_route_active"}})
+	if marshalErr != nil {
+		return
+	}
+	if _, writeErr := peer.Write(append(response, '\n')); writeErr != nil {
+		return
+	}
+}
+
+// checkJS8Request verifies the transmit request and that its payload also round-trips through the decoder.
+func checkJS8Request(t *testing.T, cfg Config, line, payload string) {
+	t.Helper()
+	var request struct {
+		Type   string `json:"type"`
+		Value  string `json:"value"`
+		Params struct {
+			ID       uint64 `json:"_ID"`
+			Priority string `json:"PRIORITY"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal([]byte(line), &request); err != nil {
+		t.Fatal(err)
+	}
+	if request.Type != "TX.SEND_MESSAGE" || request.Value != "@AREDN MSG "+payload || request.Params.Priority != "HIGH" || request.Params.ID != 1 {
+		t.Fatalf("synthetic modem request = %+v", request)
+	}
+	decoder, decodeErr := newJS8(cfg)
+	if decodeErr != nil {
+		t.Fatal(decodeErr)
+	}
+	var received []Message
+	decoder.feed(directedJSON("W1AW", "N0CALL", " ", "W1AW: N0CALL "+payload+" "+endMarker), func(message Message) { received = append(received, message) })
+	if len(received) != 1 || received[0].Payload != payload {
+		t.Fatalf("AL4 JS8 envelope rejected: %+v", received)
+	}
+}
+
 func TestJS8BeaconThroughSyntheticAPIAndRefusal(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer closeQuietly(t, listener)
 	states := make([]string, 0, 3)
 	payload, err := protocol.EncodeCompact(protocol.Advertisement{Address: netip.MustParseAddr("198.51.100.27"), ValidFor: 90 * time.Minute, Services: protocol.ServiceSignalProxy | protocol.ServiceSimpleXSMP, ServicesPresent: true})
 	if err != nil || !strings.HasPrefix(payload, "AL4 ") || !protocol.HasAdvertisementPrefix(payload) {
@@ -129,35 +188,7 @@ func TestJS8BeaconThroughSyntheticAPIAndRefusal(t *testing.T) {
 	}
 	requestSeen := make(chan string, 1)
 	serverDone := make(chan struct{})
-	go func() {
-		defer close(serverDone)
-		peer, acceptErr := listener.Accept()
-		if acceptErr != nil {
-			return
-		}
-		defer peer.Close()
-		line, readErr := bufio.NewReaderSize(peer, 1024).ReadString('\n')
-		if readErr != nil {
-			return
-		}
-		requestSeen <- line
-		var request struct {
-			Params struct {
-				ID uint64 `json:"_ID"`
-			} `json:"params"`
-		}
-		if json.Unmarshal([]byte(line), &request) != nil {
-			return
-		}
-		response, marshalErr := json.Marshal(map[string]any{"type": "TX.SEND_MESSAGE", "value": "", "params": map[string]any{
-			"_ID": request.Params.ID, "REFUSED": true, "REASON": "auto_route_active"}})
-		if marshalErr != nil {
-			return
-		}
-		if _, writeErr := peer.Write(append(response, '\n')); writeErr != nil {
-			return
-		}
-	}()
+	go serveJS8Refusal(t, listener, requestSeen, serverDone)
 	client, err := net.Dial("tcp", listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
@@ -174,29 +205,7 @@ func TestJS8BeaconThroughSyntheticAPIAndRefusal(t *testing.T) {
 	}()
 	select {
 	case line := <-requestSeen:
-		var request struct {
-			Type   string `json:"type"`
-			Value  string `json:"value"`
-			Params struct {
-				ID       uint64 `json:"_ID"`
-				Priority string `json:"PRIORITY"`
-			} `json:"params"`
-		}
-		if err := json.Unmarshal([]byte(line), &request); err != nil {
-			t.Fatal(err)
-		}
-		if request.Type != "TX.SEND_MESSAGE" || request.Value != "@AREDN MSG "+payload || request.Params.Priority != "HIGH" || request.Params.ID != 1 {
-			t.Fatalf("synthetic modem request = %+v", request)
-		}
-		decoder, decodeErr := newJS8(cfg)
-		if decodeErr != nil {
-			t.Fatal(decodeErr)
-		}
-		var received []Message
-		decoder.feed(directedJSON("W1AW", "N0CALL", " ", "W1AW: N0CALL "+payload+" "+endMarker), func(message Message) { received = append(received, message) })
-		if len(received) != 1 || received[0].Payload != payload {
-			t.Fatalf("AL4 JS8 envelope rejected: %+v", received)
-		}
+		checkJS8Request(t, cfg, line, payload)
 	case <-time.After(time.Second):
 		t.Fatal("synthetic API received no message")
 	}

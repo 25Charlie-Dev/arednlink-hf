@@ -49,10 +49,17 @@ type controlListener struct {
 
 func secureFile(path string, info os.FileInfo) error {
 	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || st.Uid != uint32(os.Geteuid()) || st.Nlink != 1 {
+	if !ok || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || !euidMatches(st.Uid) || st.Nlink != 1 {
 		return fmt.Errorf("unsafe control lock: %s", path)
 	}
 	return nil
+}
+
+// euidMatches reports whether uid is this process's effective user. A negative
+// effective uid (unsupported platform) matches nothing.
+func euidMatches(uid uint32) bool {
+	euid := os.Geteuid()
+	return euid >= 0 && uint64(euid) == uint64(uid)
 }
 
 // closeBestEffort closes a resource being abandoned after an earlier failure.
@@ -84,7 +91,7 @@ func checkControlDir(path string) error {
 		return err
 	}
 	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || !info.IsDir() || info.Mode().Perm() != 0700 || st.Uid != uint32(os.Geteuid()) {
+	if !ok || !info.IsDir() || info.Mode().Perm() != 0700 || !euidMatches(st.Uid) {
 		return errors.New("unsafe control directory ownership or permissions")
 	}
 	return nil
@@ -136,7 +143,7 @@ func removeStaleSocket(path string) error {
 		return err
 	}
 	oldStat, ok := old.Sys().(*syscall.Stat_t)
-	if !ok || old.Mode()&os.ModeSocket == 0 || old.Mode().Perm() != 0600 || oldStat.Uid != uint32(os.Geteuid()) {
+	if !ok || old.Mode()&os.ModeSocket == 0 || old.Mode().Perm() != 0600 || !euidMatches(oldStat.Uid) {
 		return errors.New("unsafe existing control socket")
 	}
 	conn, dialErr := net.DialTimeout("unix", path, 200*time.Millisecond)
@@ -321,7 +328,9 @@ func acceptLoop(ctx context.Context, listener unixAcceptor, clients *clientSet, 
 				return err
 			}
 			logger.Warn("control accept failed; retrying", "error", err, "delay", delay)
-			if !sleepContext(ctx, delay+rand.N(delay/4+1)) {
+			// G404: accept-retry jitter only; it has no secrecy or anti-spoofing role.
+			jitter := rand.N(delay/4 + 1) //nolint:gosec // G404: backoff jitter, not a security token
+			if !sleepContext(ctx, delay+jitter) {
 				return nil
 			}
 			delay = min(delay*2, acceptBackoffMax)
@@ -380,26 +389,34 @@ func handle(ctx context.Context, conn net.Conn, peers PeerSource, radio *status.
 	}
 }
 
-func dispatch(ctx context.Context, frame []byte, peers PeerSource, radio *status.RadioStatus, config ConfigBackend) response {
-	fail := func(code string) response { return response{Error: code} }
+// parseRequest decodes a frame into its operation and field set.
+// A non-empty code names the rejection.
+func parseRequest(frame []byte) (op string, fields map[string]json.RawMessage, code string) {
 	if jsoncheck.Validate(frame, 2) != nil {
-		return fail("invalid_request")
+		return "", nil, "invalid_request"
 	}
-	var fields map[string]json.RawMessage
 	if json.Unmarshal(frame, &fields) != nil {
-		return fail("invalid_request")
+		return "", nil, "invalid_request"
 	}
 	for key := range fields {
 		if key != "op" && key != "config" {
-			return fail("invalid_request")
+			return "", nil, "invalid_request"
 		}
 	}
-	var op string
 	if string(fields["op"]) == "null" || json.Unmarshal(fields["op"], &op) != nil {
-		return fail("invalid_request")
+		return "", nil, "invalid_request"
 	}
 	if op != "status" && op != "config.get" && op != "config.validate" && op != "config.save" {
-		return fail("unknown_operation")
+		return "", nil, "unknown_operation"
+	}
+	return op, fields, ""
+}
+
+func dispatch(ctx context.Context, frame []byte, peers PeerSource, radio *status.RadioStatus, config ConfigBackend) response {
+	fail := func(code string) response { return response{Error: code} }
+	op, fields, code := parseRequest(frame)
+	if code != "" {
+		return fail(code)
 	}
 	if op == "status" || op == "config.get" {
 		if len(fields) != 1 {

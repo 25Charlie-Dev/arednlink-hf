@@ -20,8 +20,10 @@ func controlRequest(t *testing.T, path string, request any) map[string]json.RawM
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(time.Second))
+	defer closeQuietly(t, conn)
+	if err := conn.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	if err := json.NewEncoder(conn).Encode(request); err != nil {
 		t.Fatal(err)
 	}
@@ -62,9 +64,7 @@ func startControlApp(t *testing.T, cfg Config, path string) (context.CancelFunc,
 }
 func TestControlAtomicConfigSave(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
+	setMode(t, dir, 0700)
 	cfg := Defaults()
 	cfg.ControlSocket = filepath.Join(dir, "control.sock")
 	cfg.ResourceGuard.Enabled = false
@@ -78,7 +78,7 @@ func TestControlAtomicConfigSave(t *testing.T) {
 		if string(reply["error"]) != `"invalid_config"` {
 			t.Fatal(reply)
 		}
-		data, _ := os.ReadFile(path)
+		data, _ := readTestFile(path)
 		if string(data) != "{}" {
 			t.Fatal("invalid config changed file")
 		}
@@ -114,9 +114,7 @@ func TestControlAtomicConfigSave(t *testing.T) {
 
 func TestControlSaveRepairsInvalidSavedConfig(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
+	setMode(t, dir, 0700)
 	cfg := Defaults()
 	cfg.ControlSocket = filepath.Join(dir, "control.sock")
 	cfg.ResourceGuard.Enabled = false
@@ -132,7 +130,7 @@ func TestControlSaveRepairsInvalidSavedConfig(t *testing.T) {
 	if string(reply["ok"]) != "true" {
 		t.Fatalf("save refused on invalid saved file: %v", reply)
 	}
-	data, err := os.ReadFile(path)
+	data, err := readTestFile(path)
 	if err != nil || string(data) != `{"max_peers":12}` {
 		t.Fatalf("saved file = %q, %v", data, err)
 	}
@@ -144,9 +142,7 @@ func TestControlSaveRepairsInvalidSavedConfig(t *testing.T) {
 
 func TestControlStatusReportsPeerTablePolicy(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
+	setMode(t, dir, 0700)
 	cfg := Defaults()
 	cfg.ControlSocket = filepath.Join(dir, "control.sock")
 	cfg.ResourceGuard.Enabled = false

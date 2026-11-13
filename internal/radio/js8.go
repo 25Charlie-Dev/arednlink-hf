@@ -69,7 +69,7 @@ func validGroup(group string) bool {
 		return false
 	}
 	for i := 1; i < len(group); i++ {
-		if !(group[i] >= 'A' && group[i] <= 'Z' || group[i] >= '0' && group[i] <= '9') {
+		if (group[i] < 'A' || group[i] > 'Z') && (group[i] < '0' || group[i] > '9') {
 			return false
 		}
 	}

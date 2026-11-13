@@ -93,12 +93,51 @@ func TestKISSTransmitRejectsInvalidPayloadAndCallsign(t *testing.T) {
 	}
 }
 
+// serveKISSObserver plays a synthetic modem: it decodes the first KISS beacon it receives.
+func serveKISSObserver(t *testing.T, listener net.Listener, cfg Config, observed chan<- Message, serverDone chan<- struct{}) {
+	defer close(serverDone)
+	peer, acceptErr := listener.Accept()
+	if acceptErr != nil {
+		return
+	}
+	defer closeQuietly(t, peer)
+	decoder, _ := newKISS(cfg)
+	buffer := make([]byte, 128)
+	for {
+		count, readErr := peer.Read(buffer)
+		if count > 0 {
+			received := false
+			decoder.feed(buffer[:count], func(message Message) {
+				observed <- message
+				received = true
+			})
+			if received {
+				return
+			}
+		}
+		if readErr != nil {
+			return
+		}
+	}
+}
+
+func checkKISSObserved(t *testing.T, message Message, payload string) {
+	t.Helper()
+	if message.Source != "N0CALL" || message.Payload != payload || message.Transport != "kiss" {
+		t.Fatalf("synthetic modem received %#v", message)
+	}
+	parsed, parseErr := protocol.Parse(message.Payload)
+	if parseErr != nil || parsed.Address != netip.MustParseAddr("198.51.100.27") || parsed.Services != protocol.ServiceSignalProxy|protocol.ServiceSimpleXSMP {
+		t.Fatalf("AL4 KISS envelope rejected: %+v, %v", parsed, parseErr)
+	}
+}
+
 func TestKISSTransmitDueBeaconThroughSyntheticModem(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer closeQuietly(t, listener)
 	payload, err := protocol.EncodeCompact(protocol.Advertisement{Address: netip.MustParseAddr("198.51.100.27"), ValidFor: 90 * time.Minute, Services: protocol.ServiceSignalProxy | protocol.ServiceSimpleXSMP, ServicesPresent: true})
 	if err != nil || !strings.HasPrefix(payload, "AL4 ") || !protocol.HasAdvertisementPrefix(payload) {
 		t.Fatalf("invalid AL4 payload %q: %v", payload, err)
@@ -110,32 +149,7 @@ func TestKISSTransmitDueBeaconThroughSyntheticModem(t *testing.T) {
 		OnTransmit: func(state string) { states = append(states, state) }}
 	observed := make(chan Message, 1)
 	serverDone := make(chan struct{})
-	go func() {
-		defer close(serverDone)
-		peer, acceptErr := listener.Accept()
-		if acceptErr != nil {
-			return
-		}
-		defer peer.Close()
-		decoder, _ := newKISS(cfg)
-		buffer := make([]byte, 128)
-		for {
-			count, readErr := peer.Read(buffer)
-			if count > 0 {
-				received := false
-				decoder.feed(buffer[:count], func(message Message) {
-					observed <- message
-					received = true
-				})
-				if received {
-					return
-				}
-			}
-			if readErr != nil {
-				return
-			}
-		}
-	}()
+	go serveKISSObserver(t, listener, cfg, observed, serverDone)
 	client, err := net.Dial("tcp", listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
@@ -152,13 +166,7 @@ func TestKISSTransmitDueBeaconThroughSyntheticModem(t *testing.T) {
 	}()
 	select {
 	case message := <-observed:
-		if message.Source != "N0CALL" || message.Payload != payload || message.Transport != "kiss" {
-			t.Fatalf("synthetic modem received %#v", message)
-		}
-		parsed, parseErr := protocol.Parse(message.Payload)
-		if parseErr != nil || parsed.Address != netip.MustParseAddr("198.51.100.27") || parsed.Services != protocol.ServiceSignalProxy|protocol.ServiceSimpleXSMP {
-			t.Fatalf("AL4 KISS envelope rejected: %+v, %v", parsed, parseErr)
-		}
+		checkKISSObserved(t, message, payload)
 	case <-time.After(time.Second):
 		t.Fatal("synthetic modem received no KISS beacon")
 	}

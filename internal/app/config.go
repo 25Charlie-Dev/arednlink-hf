@@ -83,7 +83,7 @@ func Defaults() Config {
 
 // LoadConfig reads a bounded strict JSON configuration from an explicit path.
 func LoadConfig(path string) (Config, error) {
-	f, err := os.Open(path) // The operator supplies a local configuration path.
+	f, err := os.Open(path) //nolint:gosec // G304: the operator supplies the configuration path on the command line
 	if err != nil {
 		return Config{}, fmt.Errorf("open configuration: %w", err)
 	}
@@ -149,11 +149,16 @@ func (c Config) Validate() error {
 	if _, err := c.coreConfig(); err != nil {
 		return err
 	}
+	return c.validateRadios()
+}
+
+// validateRadios checks the single-radio and multi-radio forms against each other.
+func (c Config) validateRadios() error {
 	if len(c.Radios) > 0 {
 		if len(c.Radios) > 2 {
 			return errors.New("radios supports at most two adapters")
 		}
-		if c.Radio.Kind != "none" || c.Radio.Endpoint != "" || c.Radio.Callsign != "" || c.Radio.Destination != "" || c.Radio.AllowRemote || c.Radio.Beacon.hasSettings() {
+		if c.Radio.Kind != "none" || c.Radio.hasSettings() {
 			return errors.New("radio and radios cannot both be active")
 		}
 		seen := make(map[string]bool, 2)
@@ -169,12 +174,17 @@ func (c Config) Validate() error {
 		return nil
 	}
 	if c.Radio.Kind == "none" {
-		if c.Radio.Endpoint != "" || c.Radio.Callsign != "" || c.Radio.Destination != "" || c.Radio.AllowRemote || c.Radio.Beacon.hasSettings() {
+		if c.Radio.hasSettings() {
 			return errors.New("radio settings require an enabled adapter")
 		}
 		return nil
 	}
 	return c.Radio.validate()
+}
+
+// hasSettings reports whether any adapter setting other than Kind is present.
+func (c RadioConfig) hasSettings() bool {
+	return c.Endpoint != "" || c.Callsign != "" || c.Destination != "" || c.AllowRemote || c.Beacon.hasSettings()
 }
 
 func (c RadioConfig) validate() error {
@@ -262,46 +272,20 @@ func (c RadioConfig) beaconConfig() (radio.BeaconConfig, error) {
 	if !b.hasSettings() {
 		return radio.BeaconConfig{}, nil
 	}
-	if b.IP != "" && b.Endpoint != "" {
-		return radio.BeaconConfig{}, errors.New("radio advert cannot mix ip and endpoint")
+	if err := b.checkShape(); err != nil {
+		return radio.BeaconConfig{}, err
 	}
-	if b.IP == "" && b.Services != nil {
-		return radio.BeaconConfig{}, errors.New("radio advert services require ip")
-	}
-	if b.Enabled && b.IP == "" && b.Endpoint == "" {
-		return radio.BeaconConfig{}, errors.New("radio advert requires ip or endpoint")
-	}
-	var address netip.Addr
-	var endpoint netip.AddrPort
-	var err error
-	if b.IP != "" {
-		address, err = netip.ParseAddr(b.IP)
-		if err != nil || address.Zone() != "" || address.Is4In6() || !address.IsGlobalUnicast() {
-			return radio.BeaconConfig{}, errors.New("invalid radio advert ip")
-		}
-	} else if b.Endpoint != "" {
-		endpoint, err = netip.ParseAddrPort(b.Endpoint)
-		if err != nil {
-			return radio.BeaconConfig{}, errors.New("invalid radio advert endpoint")
-		}
+	address, endpoint, err := b.parseTarget()
+	if err != nil {
+		return radio.BeaconConfig{}, err
 	}
 	services, err := protocol.ServiceMask(b.Services)
 	if err != nil {
 		return radio.BeaconConfig{}, fmt.Errorf("invalid radio advert services: %w", err)
 	}
-	var interval time.Duration
-	if b.Interval != "" {
-		interval, err = time.ParseDuration(b.Interval)
-	}
-	if err != nil || b.Interval != "" && interval != 30*time.Minute && interval != 60*time.Minute || b.Enabled && b.Interval == "" {
-		return radio.BeaconConfig{}, errors.New("radio advert interval must be 30m or 60m")
-	}
-	var jitter time.Duration
-	if b.Jitter != "" {
-		jitter, err = time.ParseDuration(b.Jitter)
-	}
-	if err != nil || b.Jitter != "" && (jitter <= 0 || jitter > 5*time.Minute) || b.Enabled && b.Jitter == "" {
-		return radio.BeaconConfig{}, errors.New("radio advert jitter must be positive and at most 5m")
+	interval, jitter, err := b.parseTiming()
+	if err != nil {
+		return radio.BeaconConfig{}, err
 	}
 	if b.ValidityMinutes > 180 || b.Enabled && b.ValidityMinutes == 0 {
 		return radio.BeaconConfig{}, errors.New("radio advert validity must be 1..180 minutes")
@@ -317,6 +301,59 @@ func (c RadioConfig) beaconConfig() (radio.BeaconConfig, error) {
 		}
 	}
 	return radio.BeaconConfig{Enabled: b.Enabled, Endpoint: endpoint, Address: address, Services: services, ValidityMinutes: uint8(b.ValidityMinutes), Interval: interval, Jitter: jitter}, nil
+}
+
+// checkShape rejects advert settings whose fields contradict each other.
+func (b BeaconConfig) checkShape() error {
+	if b.IP != "" && b.Endpoint != "" {
+		return errors.New("radio advert cannot mix ip and endpoint")
+	}
+	if b.IP == "" && b.Services != nil {
+		return errors.New("radio advert services require ip")
+	}
+	if b.Enabled && b.IP == "" && b.Endpoint == "" {
+		return errors.New("radio advert requires ip or endpoint")
+	}
+	return nil
+}
+
+// parseTarget parses whichever of ip or endpoint is set; the other is zero.
+func (b BeaconConfig) parseTarget() (netip.Addr, netip.AddrPort, error) {
+	if b.IP != "" {
+		address, err := netip.ParseAddr(b.IP)
+		if err != nil || address.Zone() != "" || address.Is4In6() || !address.IsGlobalUnicast() {
+			return netip.Addr{}, netip.AddrPort{}, errors.New("invalid radio advert ip")
+		}
+		return address, netip.AddrPort{}, nil
+	}
+	if b.Endpoint != "" {
+		endpoint, err := netip.ParseAddrPort(b.Endpoint)
+		if err != nil {
+			return netip.Addr{}, netip.AddrPort{}, errors.New("invalid radio advert endpoint")
+		}
+		return netip.Addr{}, endpoint, nil
+	}
+	return netip.Addr{}, netip.AddrPort{}, nil
+}
+
+// parseTiming parses and bounds the interval and jitter strings.
+func (b BeaconConfig) parseTiming() (time.Duration, time.Duration, error) {
+	var interval time.Duration
+	var err error
+	if b.Interval != "" {
+		interval, err = time.ParseDuration(b.Interval)
+	}
+	if err != nil || b.Interval != "" && interval != 30*time.Minute && interval != 60*time.Minute || b.Enabled && b.Interval == "" {
+		return 0, 0, errors.New("radio advert interval must be 30m or 60m")
+	}
+	var jitter time.Duration
+	if b.Jitter != "" {
+		jitter, err = time.ParseDuration(b.Jitter)
+	}
+	if err != nil || b.Jitter != "" && (jitter <= 0 || jitter > 5*time.Minute) || b.Enabled && b.Jitter == "" {
+		return 0, 0, errors.New("radio advert jitter must be positive and at most 5m")
+	}
+	return interval, jitter, nil
 }
 
 func (b BeaconConfig) hasSettings() bool {
