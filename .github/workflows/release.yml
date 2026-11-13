@@ -52,7 +52,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26.10"
+          go-version: "1.26.11"
           cache: false
 
       - name: Build the ARMv7 binary and compare with the pinned hash
@@ -90,6 +90,14 @@ jobs:
           jq '.metadata.component.licenses = [{"license": {"id": "GPL-2.0-only"}}]' \
             "$RUNNER_TEMP/sbom.json" > "dist/arednlink-hf-$PACKAGE_VERSION.cdx.json"
 
+      - name: Vulnerability exploitability statement (OpenVEX)
+        run: |
+          GOBIN="$RUNNER_TEMP/bin" go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          GOOS=linux GOARCH=arm GOARM=7 "$RUNNER_TEMP/bin/govulncheck" -tags kiss,js8call -format openvex ./... \
+            > "dist/arednlink-hf-$PACKAGE_VERSION.openvex.json"
+          jq -r '.statements[]? | "\(.vulnerability.name) \(.status) \(.justification // "")"' \
+            "dist/arednlink-hf-$PACKAGE_VERSION.openvex.json"
+
       - name: Checksums
         working-directory: dist
         run: sha256sum arednlink-hf-* > SHA256SUMS && cat SHA256SUMS
@@ -111,5 +119,5 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           gh release create "$TAG" --verify-tag --prerelease --title "$TAG" \
-            --notes "Unsigned APK for armv7 AREDN nodes; install with apk add --allow-untrusted. Verify downloads with SHA256SUMS or gh attestation verify." \
+            --notes "Unsigned APK for armv7 AREDN nodes; install with apk add --allow-untrusted. Verify downloads with SHA256SUMS or gh attestation verify. The .cdx.json file is the CycloneDX SBOM; the .openvex.json file states which known Go vulnerabilities affect this build." \
             dist/*

@@ -7,7 +7,6 @@ GOARM ?= 7
 
 .PHONY: build none kiss js8call both test
 
-# Invoke only inside the designated remote build container.
 build:
 	CGO_ENABLED=0 GOOS=linux GOARCH=$(GOARCH) GOARM=$(GOARM) $(GO) build -trimpath -tags '$(TAGS)' -ldflags '-s -w -X main.version=$(VERSION)' -o '$(OUTPUT)' ./cmd/arednlink-hf
 

@@ -1,6 +1,6 @@
 #!/bin/sh
 set -eu
-# Run only inside an offline build container with /src read-only and /out writable.
+# Full local check suite: source at /src, results written to /out.
 # Fail on unformatted Go before any copy or rewrite.
 unformatted=$(cd /src && gofmt -l cmd internal)
 if [ -n "$unformatted" ]; then

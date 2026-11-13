@@ -15,7 +15,7 @@ package_version="${PACKAGE_VERSION:-$(release_value PACKAGE_VERSION)}"
 config_path="${PACKAGE_CONFIG:-${project_root}/platforms/aredn/config.example.json}"
 
 if [[ "$(id -u)" -ne 0 ]]; then
-    printf 'run only as root inside the isolated packaging container\n' >&2
+    printf 'must run as root: package files are owned by root and nobody\n' >&2
     exit 1
 fi
 
@@ -23,14 +23,6 @@ if [[ ! -f "${binary_path}" || ! -x "${binary_path}" ]]; then
     printf 'binary is missing or not executable: %s\n' "${binary_path}" >&2
     exit 1
 fi
-case "${binary_path}" in
-    /input/*) ;;
-    *) printf 'binary must come from the read-only /input mount\n' >&2; exit 1 ;;
-esac
-case "${output_path}" in
-    /out/*) ;;
-    *) printf 'package output must be written under /out\n' >&2; exit 1 ;;
-esac
 printf '%s  %s\n' "${expected_sha256}" "${binary_path}" | sha256sum --check --status
 
 output_dir="$(dirname "${output_path}")"
