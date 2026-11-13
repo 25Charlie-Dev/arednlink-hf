@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOTOOLCHAIN: local
+  GOFLAGS: -buildvcs=false
+
+jobs:
+  checks:
+    name: Checks (${{ matrix.label }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: none, tags: "" }
+          - { label: kiss, tags: "kiss" }
+          - { label: js8call, tags: "js8call" }
+          - { label: kiss-js8call, tags: "kiss js8call" }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.10"
+          cache: false
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l cmd internal)
+          if [ -n "$unformatted" ]; then printf 'unformatted:\n%s\n' "$unformatted"; exit 1; fi
+      - name: go vet
+        run: go vet -tags "${{ matrix.tags }}" ./...
+      - name: go test -race
+        run: CGO_ENABLED=1 go test -race -count=1 -tags "${{ matrix.tags }}" ./...
+      - name: ARMv7 build
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -tags "${{ matrix.tags }}" \
+            -trimpath -ldflags '-s -w -X main.version=ci' -o "arednlink-hf-${{ matrix.label }}-armv7" ./cmd/arednlink-hf
+          ls -l "arednlink-hf-${{ matrix.label }}-armv7"
+
+  daemon:
+    name: Dependency check and smokes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.10"
+          cache: false
+      - name: Daemon must not link an HTTP server
+        run: |
+          if go list -tags 'kiss js8call' -deps ./cmd/arednlink-hf | grep -E '^(net/http|html/template)$'; then
+            echo "forbidden daemon dependency"; exit 1
+          fi
+      - name: Build combined binary
+        run: CGO_ENABLED=0 go build -tags 'kiss js8call' -trimpath -ldflags '-s -w -X main.version=ci' -o "$RUNNER_TEMP/arednlink-hf" ./cmd/arednlink-hf
+      - name: Artifact smokes
+        run: |
+          for smoke in control receive config resource_guard; do
+            python3 "tests/artifact_${smoke}_smoke.py" --binary "$RUNNER_TEMP/arednlink-hf"
+          done
+      - name: shellcheck
+        run: |
+          shellcheck -s sh tests/verify-native.sh platforms/aredn/www/cgi-bin/apps/arednlink-hf/admin
+          shellcheck platforms/aredn/package/prepare.sh platforms/aredn/package/check-package.sh

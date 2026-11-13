@@ -7,10 +7,11 @@ output_path="${2:?usage: prepare.sh ARMV7_BINARY OUTPUT_APK [APK_TOOL]}"
 apk_tool="${3:-apk}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 project_root="$(cd "${script_dir}/../../.." && pwd)"
-# The pinned default is the alpha-019a50d control-socket armv7 binary (tags kiss
-# and js8call, -trimpath, stripped). Override PACKAGE_BINARY_SHA256 for another build.
-expected_sha256="${PACKAGE_BINARY_SHA256:-ec7114dde37009743274c7c59e081c87a9648f109c316df34f4627f9e026ec68}"
-package_version="${PACKAGE_VERSION:-0.1.0_alpha9-r0}"
+# Defaults come from release.env: the pinned armv7 binary hash (tags kiss and
+# js8call, -trimpath, stripped) and the package version. Environment overrides win.
+release_value() { sed -n "s/^$1=//p" "${script_dir}/release.env"; }
+expected_sha256="${PACKAGE_BINARY_SHA256:-$(release_value BINARY_SHA256)}"
+package_version="${PACKAGE_VERSION:-$(release_value PACKAGE_VERSION)}"
 config_path="${PACKAGE_CONFIG:-${project_root}/platforms/aredn/config.example.json}"
 
 if [[ "$(id -u)" -ne 0 ]]; then
