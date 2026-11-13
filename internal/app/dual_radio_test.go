@@ -5,6 +5,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -63,28 +64,37 @@ func waitDual(t *testing.T, path string, condition func(control.StatusSnapshot) 
 	return control.StatusSnapshot{}
 }
 
-func TestDualAdaptersIndependentReconnectAndJoin(t *testing.T) {
-	kiss, err := net.Listen("tcp", "127.0.0.1:0")
+const (
+	dualJS8Line = `{"type":"RX.DIRECTED","value":"%[1]s: N0CALL AL1 %[2]s:49173 90 \u2662","params":{"FROM":"%[1]s","TO":"N0CALL","CMD":" ","EXTRA":"","TEXT":"%[1]s: N0CALL AL1 %[2]s:49173 90 \u2662"}}` + "\n"
+)
+
+func listenLoopback(t *testing.T) net.Listener {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer kiss.Close()
-	js8, err := net.Listen("tcp", "127.0.0.1:0")
+	t.Cleanup(func() { closeQuietly(t, l) })
+	return l
+}
+
+func acceptConn(t *testing.T, l net.Listener) net.Conn {
+	t.Helper()
+	conn, err := l.Accept()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer js8.Close()
-	dir := t.TempDir()
-	if err := os.Chmod(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	cfg := Defaults()
-	cfg.ControlSocket = filepath.Join(dir, "control.sock")
-	cfg.Radios = []RadioConfig{{Kind: "kiss", Endpoint: kiss.Addr().String()}, {Kind: "js8call", Endpoint: js8.Addr().String(), Callsign: "N0CALL", Destination: "@AREDN"}}
+	t.Cleanup(func() { closeQuietly(t, conn) })
+	return conn
+}
+
+// startDualApp runs the app and registers a cleanup that stops and joins it.
+func startDualApp(t *testing.T, cfg Config) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- Run(ctx, cfg, slog.New(slog.NewTextHandler(io.Discard, nil))) }()
-	defer func() {
+	t.Cleanup(func() {
 		cancel()
 		select {
 		case err := <-done:
@@ -97,26 +107,39 @@ func TestDualAdaptersIndependentReconnectAndJoin(t *testing.T) {
 		if _, err := os.Stat(cfg.ControlSocket); !os.IsNotExist(err) {
 			t.Errorf("control socket retained: %v", err)
 		}
-	}()
+	})
 	for deadline := time.Now().Add(2 * time.Second); ; {
 		if _, err := os.Stat(cfg.ControlSocket); err == nil {
-			break
+			return
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("control socket did not start")
 		}
 		time.Sleep(time.Millisecond)
 	}
-	kissConn, err := kiss.Accept()
-	if err != nil {
+}
+
+func writeJS8Directed(t *testing.T, conn net.Conn, from, ip string) {
+	t.Helper()
+	if err := conn.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	defer kissConn.Close()
-	js8Conn, err := js8.Accept()
-	if err != nil {
+	if _, err := fmt.Fprintf(conn, dualJS8Line, from, ip); err != nil {
 		t.Fatal(err)
 	}
-	defer js8Conn.Close()
+}
+
+func TestDualAdaptersIndependentReconnectAndJoin(t *testing.T) {
+	kiss := listenLoopback(t)
+	js8 := listenLoopback(t)
+	dir := t.TempDir()
+	setMode(t, dir, 0700)
+	cfg := Defaults()
+	cfg.ControlSocket = filepath.Join(dir, "control.sock")
+	cfg.Radios = []RadioConfig{{Kind: "kiss", Endpoint: kiss.Addr().String()}, {Kind: "js8call", Endpoint: js8.Addr().String(), Callsign: "N0CALL", Destination: "@AREDN"}}
+	startDualApp(t, cfg)
+	kissConn := acceptConn(t, kiss)
+	js8Conn := acceptConn(t, js8)
 	initial := waitDual(t, cfg.ControlSocket, func(s control.StatusSnapshot) bool { return len(s.Health.Adapters) == 2 && s.Health.Healthy })
 	if initial.Health.Kind != "multiple" || initial.Health.Adapters[0].Kind != "kiss" || initial.Health.Adapters[1].Kind != "js8call" || initial.Health.Adapters[0].TX != nil || initial.Health.Adapters[1].TX != nil {
 		t.Fatalf("wrong initial health: %+v", initial.Health)
@@ -124,13 +147,7 @@ func TestDualAdaptersIndependentReconnectAndJoin(t *testing.T) {
 	if _, err := kissConn.Write(dualKISSFrame("W1AW", "AL1 198.51.100.27:49173 90")); err != nil {
 		t.Fatal(err)
 	}
-	if err := js8Conn.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	_, err = io.WriteString(js8Conn, `{"type":"RX.DIRECTED","value":"W2AW: N0CALL AL1 198.51.100.28:49173 90 \u2662","params":{"FROM":"W2AW","TO":"N0CALL","CMD":" ","EXTRA":"","TEXT":"W2AW: N0CALL AL1 198.51.100.28:49173 90 \u2662"}}`+"\n")
-	if err != nil {
-		t.Fatal(err)
-	}
+	writeJS8Directed(t, js8Conn, "W2AW", "198.51.100.28")
 	waitDual(t, cfg.ControlSocket, func(s control.StatusSnapshot) bool {
 		return len(s.Peers) == 2 && s.Health.Adapters[1].RX != nil && len(s.Health.Adapters[1].RX.RecentCallsigns) == 1
 	})
@@ -143,21 +160,14 @@ func TestDualAdaptersIndependentReconnectAndJoin(t *testing.T) {
 	if degraded.Health.Healthy || degraded.Health.State != "degraded" {
 		t.Fatalf("loss hidden: %+v", degraded.Health)
 	}
-	_, err = io.WriteString(js8Conn, `{"type":"RX.DIRECTED","value":"W3AW: N0CALL AL1 198.51.100.29:49173 90 \u2662","params":{"FROM":"W3AW","TO":"N0CALL","CMD":" ","EXTRA":"","TEXT":"W3AW: N0CALL AL1 198.51.100.29:49173 90 \u2662"}}`+"\n")
-	if err != nil {
-		t.Fatal(err)
-	}
+	writeJS8Directed(t, js8Conn, "W3AW", "198.51.100.29")
 	waitDual(t, cfg.ControlSocket, func(s control.StatusSnapshot) bool {
 		return len(s.Peers) == 3 && s.Health.Adapters[1].State == "connected"
 	})
 	if err := kiss.(*net.TCPListener).SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	reconnected, err := kiss.Accept()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reconnected.Close()
+	acceptConn(t, kiss)
 	waitDual(t, cfg.ControlSocket, func(s control.StatusSnapshot) bool {
 		return s.Health.Healthy && s.Health.Adapters[0].State == "connected"
 	})

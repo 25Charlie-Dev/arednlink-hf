@@ -72,9 +72,16 @@ func (e *ConfigEditor) Close() error {
 	return nil
 }
 
+// euidMatches reports whether uid is this process's effective user. A negative
+// effective uid (unsupported platform) matches nothing.
+func euidMatches(uid uint32) bool {
+	euid := os.Geteuid()
+	return euid >= 0 && uint64(euid) == uint64(uid)
+}
+
 func privateOwned(info os.FileInfo, directory bool) bool {
 	stat, ok := info.Sys().(*syscall.Stat_t)
-	return ok && stat.Uid == uint32(os.Geteuid()) && info.Mode().Perm()&0022 == 0 && (directory && info.IsDir() || !directory && info.Mode().IsRegular())
+	return ok && euidMatches(stat.Uid) && info.Mode().Perm()&0022 == 0 && (directory && info.IsDir() || !directory && info.Mode().IsRegular())
 }
 
 func (e *ConfigEditor) checkFile() error {

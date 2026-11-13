@@ -1,0 +1,13 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - errorlint
+    - gochecknoinits
+    - gocyclo
+    - gosec
+    - misspell
+  settings:
+    gocyclo:
+      min-complexity: 20

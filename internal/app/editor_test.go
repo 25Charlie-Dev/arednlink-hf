@@ -20,13 +20,13 @@ func TestEditorValidationAndAtomicSave(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer closeQuietly(t, e)
 	ctx := context.Background()
 	for _, bad := range []string{`{"max_peers":2,"max_peers":3}`, `{"unknown":true}`, `{"peer_table":{"full_policy":"drop"}}`, `{"enable_probes":true}`, `{"radio":{"kind":"unavailable"}}`, strings.Repeat(" ", maxConfigBytes+1)} {
 		if err := e.Save(ctx, bad); err == nil {
 			t.Fatalf("accepted invalid draft %q", bad[:min(len(bad), 50)])
 		}
-		data, err := os.ReadFile(path)
+		data, err := readTestFile(path)
 		if err != nil || string(data) != "{}" {
 			t.Fatalf("invalid draft changed file: %q %v", data, err)
 		}
@@ -57,7 +57,7 @@ func TestEditorValidationAndAtomicSave(t *testing.T) {
 	if err := e.Save(cancelled, `{}`); err == nil {
 		t.Fatal("cancelled save accepted")
 	}
-	data, err := os.ReadFile(path)
+	data, err := readTestFile(path)
 	if err != nil || string(data) != `{"max_peers":12}` {
 		t.Fatal("cancelled save changed file")
 	}
@@ -82,19 +82,15 @@ func TestEditorUnsafeTargets(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "writable-directory":
-				if err := os.Chmod(dir, 0777); err != nil {
-					t.Fatal(err)
-				}
+				setMode(t, dir, 0777)
 			case "writable-file":
-				if err := os.Chmod(path, 0666); err != nil {
-					t.Fatal(err)
-				}
+				setMode(t, path, 0666)
 			}
 			e, err := NewConfigEditor(Defaults(), path)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer e.Close()
+			defer closeQuietly(t, e)
 			if err := e.Save(context.Background(), `{}`); err == nil {
 				t.Fatal("unsafe target saved")
 			}
@@ -112,7 +108,7 @@ func TestEditorRejectsTargetSwap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer closeQuietly(t, e)
 	if err := os.Rename(path, path+".real"); err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +118,7 @@ func TestEditorRejectsTargetSwap(t *testing.T) {
 	if err := e.Save(context.Background(), `{"max_peers":12}`); err == nil {
 		t.Fatal("swapped symlink accepted")
 	}
-	data, err := os.ReadFile(path + ".real")
+	data, err := readTestFile(path + ".real")
 	if err != nil || string(data) != "{}" {
 		t.Fatal("original modified")
 	}
@@ -141,15 +137,13 @@ func TestEditorIOFailurePreservesFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
-	if err := os.Chmod(dir, 0500); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chmod(dir, 0700)
+	defer closeQuietly(t, e)
+	setMode(t, dir, 0500)
+	defer setMode(t, dir, 0700)
 	if err := e.Save(context.Background(), `{"max_peers":12}`); err == nil {
 		t.Fatal("read-only directory save succeeded")
 	}
-	data, err := os.ReadFile(path)
+	data, err := readTestFile(path)
 	if err != nil || string(data) != "{}" {
 		t.Fatal("failed I/O changed file")
 	}
@@ -160,7 +154,7 @@ func TestEditorNoConfigStillValidates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer closeQuietly(t, e)
 	if err := e.Validate(context.Background(), `{}`); err != nil {
 		t.Fatal(err)
 	}

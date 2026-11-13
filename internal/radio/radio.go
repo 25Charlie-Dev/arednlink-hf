@@ -273,7 +273,9 @@ func supervise(ctx context.Context, cfg Config, endpoint string, handler func(co
 			state(cfg, "connected")
 			started := time.Now()
 			reports.note(ctx, slog.LevelInfo, "radio.connection", "connected")
-			err = receive(ctx, conn, cfg, handler, reports, schedule)
+			// Discarded: the receive error; the event log records only the fixed
+			// disconnected reason and the loop reconnects either way.
+			_ = receive(ctx, conn, cfg, handler, reports, schedule)
 			if time.Since(started) >= stableSession {
 				delay = 2 * time.Second
 			}

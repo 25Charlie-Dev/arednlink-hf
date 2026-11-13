@@ -109,7 +109,7 @@ func countModemWrites(t *testing.T, schedule *beaconSchedule, cfg Config, window
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer closeQuietly(t, listener)
 	client, err := net.Dial("tcp", listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
@@ -118,7 +118,7 @@ func countModemWrites(t *testing.T, schedule *beaconSchedule, cfg Config, window
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer modem.Close()
+	defer closeQuietly(t, modem)
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() {
@@ -137,7 +137,7 @@ func countModemWrites(t *testing.T, schedule *beaconSchedule, cfg Config, window
 		}
 	}
 	cancel()
-	<-done
+	t.Logf("receive ended: %v", <-done)
 	if total%len("FRAME") != 0 {
 		t.Fatalf("partial frame: %d bytes", total)
 	}

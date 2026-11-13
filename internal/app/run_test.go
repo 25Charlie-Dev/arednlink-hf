@@ -5,7 +5,6 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -16,7 +15,7 @@ func TestRunListenerFailureJoinsGuard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer closeQuietly(t, listener)
 	for _, enabled := range []bool{false, true} {
 		cfg := Defaults()
 		cfg.ControlSocket = listener.Addr().String()
@@ -44,15 +43,14 @@ func TestRunCancelledContextJoinsServices(t *testing.T) {
 		cancel()
 		cfg := Defaults()
 		dir := t.TempDir()
-		if err := os.Chmod(dir, 0700); err != nil {
-			t.Fatal(err)
-		}
+		setMode(t, dir, 0700)
 		cfg.ControlSocket = filepath.Join(dir, "control.sock")
 		cfg.ResourceGuard.Enabled = enabled
 		done := make(chan error, 1)
 		go func() { done <- Run(ctx, cfg, slog.New(slog.NewTextHandler(io.Discard, nil))) }()
 		select {
-		case <-done:
+		case err := <-done:
+			t.Logf("cancelled run ended: %v", err)
 		case <-time.After(3 * time.Second):
 			t.Fatal("cancelled run retained an owned service")
 		}
